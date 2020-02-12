@@ -1,0 +1,198 @@
+//+------------------------------------------------------------------+
+//|                                              ChartDataSource.mqh |
+//|                              Copyright 2015, www.TheForexGuy.com |
+//|                                       http://www.TheForexGuy.com |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2015, www.TheForexGuy.com"
+#property link      "http://www.TheForexGuy.com"
+#property version   "1.00"
+#property strict
+
+#include "BaseDataSource.mqh"
+
+#include "..\..\..\..\Shared Projects\DaleLib\Basket\Includes\ArithmeticPCTBasketIndex.mqh"
+
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+class BasketDataSource : public BaseDataSource {
+   public:
+      BasketDataSource(
+         CBasketUIItem &basketData,
+         BaseDataSource *&dataSource,
+         ENUM_TIMEFRAMES _basePeriod,
+         const int inScanLimit
+      ) {
+         basketData.Copy(m_basketData);
+         CBasketSymbolUIItem symbols[];
+         basketData.GetSymbolsItems(symbols);
+         
+         int limit=inScanLimit;
+   
+         for(int i=0; i<ArraySize(symbols); i++) {
+            string symbol=symbols[i].SymbolName();
+            
+            int shift = iBarShift(symbol, _basePeriod, inScanLimit);
+            if(shift != -1)
+              {
+               limit=shift;
+               break;
+            }
+         }
+         
+         m_basket=new ArithmeticPCTBasketIndex(_basePeriod,_basePeriod,limit,100.00);
+   
+         for(int i=0; i<ArraySize(symbols); i++) {
+            CBasketSymbolUIItem item=symbols[i];
+            BasketInput baskInput;
+   
+            baskInput.symbol        = item.SymbolName();
+            baskInput.shouldInvert  = item.NeedInvert();
+            baskInput.weight        = item.Weight();
+   
+            m_basket.Insert(baskInput);
+         }
+   
+         UpdateAllRates();
+      }
+
+                    ~BasketDataSource()
+     {
+      delete m_basket;
+     }
+
+   int BarsCount() const override
+     {
+      return ArraySize(m_rates);
+     }
+
+   double Open(const int shift) const override
+     {
+      if(shift < 0 || shift >= BarsCount()) return 0.0;
+      return m_rates[shift].open;
+     }
+
+   double High(const int shift) const override
+     {
+      if(shift < 0 || shift >= BarsCount()) return 0.0;
+      return m_rates[shift].high;
+     }
+
+   double Low(const int shift) const override
+     {
+      if(shift < 0 || shift >= BarsCount()) return 0.0;
+      return m_rates[shift].low;
+     }
+
+   double Close(const int shift) const override
+     {
+      if(shift < 0 || shift >= BarsCount()) return 0.0;
+      return m_rates[shift].close;
+     }
+
+   long Volume(const int shift) const override
+     {
+      if(shift < 0 || shift >= BarsCount()) return 0;
+      return m_rates[shift].tick_volume;
+     }
+
+   datetime Time(const int shift) const override
+     {
+      if(shift < 0 || shift >= BarsCount()) return (datetime)0;
+      return m_rates[shift].time;
+     }
+   int BarShift(const datetime time) const override
+     {
+      if(time>Time(0))
+        {
+         return 0;
+        }
+
+      for(int i=0; i<BarsCount()-1; i++)
+        {
+         if(time>=Time(i+1) && time<Time(i))
+           {
+            return i + 1;
+           }
+        }
+
+      return -1;
+     }
+
+   string Type() const override
+     {
+      return typename(this);
+     }
+
+   bool UpdateRates() override
+     {
+      RefreshRates();
+
+      if(ArraySize(m_rates)<1)
+        {
+         return false;
+        }
+      int cntOfNewRates=0;
+
+      m_basket.Update();
+      if(m_basketItemsCount==0)
+        {
+         m_basketItemsCount=m_basket.BasketCandleCount();
+        }
+
+      bool incomeNewCandles=m_basketItemsCount<m_basket.BasketCandleCount();
+      if(incomeNewCandles)
+        {
+         int countOfNewCandles=m_basket.BasketCandleCount()-m_basketItemsCount;
+
+         MqlRates rates[];
+
+         m_basket.GetIndexUpdate(rates,countOfNewCandles+1);
+
+         MqlRates newRates[];
+         ArrayResize(newRates,ArraySize(m_rates)+ArraySize(rates)-1);
+
+         int index = 0;
+         for(int i = 0; i < ArraySize(rates); i++)
+           {
+            newRates[index]=rates[i];
+            index++;
+           }
+
+         for(int i=1; i<ArraySize(m_rates); i++)
+           {
+            newRates[index]=m_rates[i];
+            index++;
+           }
+
+         ArrayFree(m_rates);
+         ArrayCopy(m_rates,newRates);
+         m_basketItemsCount=m_basket.BasketCandleCount();
+        }
+      else
+        {
+         if(ArraySize(m_rates)>0)
+           {
+            MqlRates newTick;
+            m_basket.GetIndexUpdate(newTick);
+            m_rates[0]=newTick;
+           }
+        }
+
+      return true;
+     }
+
+private:
+   CBasketUIItem     m_basketData;
+   BaseBasketBuilder *m_basket;
+   int               m_basketItemsCount;
+   MqlRates          m_rates[];
+
+   void UpdateAllRates()
+     {
+      m_basket.BuildIndex();
+      m_basket.GetIndex(m_rates);
+     }
+  };
+//+------------------------------------------------------------------+

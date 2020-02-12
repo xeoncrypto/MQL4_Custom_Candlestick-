@@ -1,0 +1,377 @@
+//+------------------------------------------------------------------+
+//|                                         HAshiPeriodConverter.mqh |
+//|                       Copyright 2016, TheForexGuy.com Dale Woods |
+//|                                      https://www.theforexguy.com |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2016, www.TheForexGuy.com"
+#property link      "https://www.TheForexGuy.com"
+#property strict
+
+#include "BaseChartBuilder.mqh"
+#include "..\..\MT4BackCompatability\MT4Functions.mqh"
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+class HeikenAshiBuilder : public BaseChartBuilder
+  {
+public:
+   HeikenAshiBuilder
+   (
+    const string symbol,
+    BaseDataSource *&dataSource,
+
+    int _chartPeriod,
+    ENUM_TIMEFRAMES _basePeriod,
+    int _chartPeriodShift,
+    int _GMTstart=-1,
+    int _brokerGMTOffset=0
+    );
+
+   virtual bool      UpdateWithNewTick(MqlRates &rates[]);
+
+private:
+   int               m_chartPeriod; // Period multiplier factor
+   ENUM_TIMEFRAMES   m_basePeriod;  // Base period for the calculation
+
+   int               m_chartPeriodShift; // false time shift for multiple same time frame charts 
+   long              m_lastVolume;
+   datetime          m_time0;
+
+   int               m_brokerHourForFirstCandle;
+   datetime          m_nextCandleTime;
+
+   int               m_GMTstart;
+   int               m_brokerGMTOffset;
+
+   int               m_day;
+   int               m_month;
+   int               m_year;
+   datetime          m_weekends;
+   datetime          m_weekdays;
+   bool              m_check;
+
+   virtual void      UpdateAllRates();
+
+   int               CalculateStartPosition();
+
+   datetime          NormalizeBarStartTime(datetime inTime);
+  };
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+HeikenAshiBuilder::HeikenAshiBuilder
+(
+ const string symbol,
+ BaseDataSource *&dataSource,
+
+ int _chartPeriod,
+ ENUM_TIMEFRAMES _basePeriod,
+ int _chartPeriodShift,
+ int _GMTstart=-1,
+ int _brokerGMTOffset=0
+ ) : BaseChartBuilder(symbol, dataSource)
+  {
+   m_chartPeriod = _chartPeriod * _basePeriod;
+   m_basePeriod  = _basePeriod;
+   m_GMTstart    = _GMTstart;
+   m_brokerGMTOffset=_brokerGMTOffset;
+   m_lastVolume=0;
+   m_chartPeriodShift=_chartPeriodShift;
+
+   if(m_GMTstart>=0 && m_GMTstart<=23)
+     {
+      m_brokerHourForFirstCandle=m_GMTstart+m_brokerGMTOffset;
+      if(m_brokerHourForFirstCandle>=24)
+        {
+         m_brokerHourForFirstCandle-=24;
+        }
+      else if(m_brokerHourForFirstCandle<0)
+        {
+         m_brokerHourForFirstCandle+=24;
+        }
+     }
+   else
+     {
+      m_brokerHourForFirstCandle=0;
+     }
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+bool HeikenAshiBuilder::UpdateWithNewTick(MqlRates &rates[])
+  {
+   m_dataSource.UpdateWithNewTick();
+   
+   int size = ArraySize(m_rates);
+   
+   if(ArraySize(m_rates)<1)
+     {
+      return false;
+     }   
+   
+   ArrayFree(rates);
+   MqlRates rateLive;
+
+   datetime cur_time= TimeLocal();
+   int periodseconds=m_chartPeriod*60;
+//--- check for new rates
+   m_time0=iTime(m_symbol,m_basePeriod,0);
+
+   if((TimeDayOfWeek(TimeCurrent())==5) && (m_check==false))
+     {
+      m_day=TimeDay(TimeCurrent());
+      m_month= TimeMonth(TimeCurrent());
+      m_year = TimeYear(TimeCurrent());
+      m_weekends=StrToTime((string) m_day+"."+(string)m_month+"."+(string) m_year+" 23:59");
+      m_weekdays= StrToTime((string) (m_day + 3) + "." + (string) m_month + "." + (string) m_year + " 00:00");
+      m_check=true;
+     }
+
+   if(m_check==true)
+     {
+      if(TimeCurrent()>m_weekdays)
+        {
+         m_check=false;
+        }
+      else if(TimeCurrent()>m_weekends)
+        {
+         return (false);
+        }
+     }
+
+   if(m_time0<m_nextCandleTime)
+     {
+      m_rates[size-1].tick_volume+=(long)m_dataSource.Volume(0)-m_lastVolume;
+      m_lastVolume=(long)m_dataSource.Volume(0);
+      
+      if(m_rates[size-1].low > m_dataSource.Low(0))
+         m_rates[size-1].low = m_dataSource.Low(0);
+         
+      if(m_rates[size-1].high < m_dataSource.High(0))
+         m_rates[size-1].high = m_dataSource.High(0);
+         
+      m_rates[size-1].close = m_dataSource.Close(0);
+
+      rateLive.open=(m_rates[size-2].open+m_rates[size-2].close)/2;
+      rateLive.close=(m_rates[size-1].open+m_rates[size-1].high+m_rates[size-1].low+m_rates[size-1].close)/4;
+      rateLive.high=MathMax(m_rates[size-1].high,MathMax(m_rates[size-1].open,m_rates[size-1].close));
+      rateLive.low=MathMin(m_rates[size-1].low,MathMin(m_rates[size-1].open,m_rates[size-1].close));
+      rateLive.tick_volume=m_rates[size-1].tick_volume;
+      rateLive.time=m_rates[size-1].time;
+
+      ArrayResize(rates,ArraySize(rates)+1);      
+      rates[ArraySize(rates)-1]=rateLive;
+     }
+   else
+     {
+      //--- no, there is new bar
+      m_rates[size-1].tick_volume+=(long)m_dataSource.Volume(1)-m_lastVolume;
+      
+      if(m_rates[size -1].low>m_dataSource.Low(1))
+         m_rates[size-1].low=m_dataSource.Low(1);
+         
+      if(m_rates[size-1].high<m_dataSource.High(1))
+         m_rates[size-1].high=m_dataSource.High(1);
+         
+      //--- write previous bar remains
+      rateLive.open=(m_rates[size-2].open+m_rates[size-2].close)/2;
+      rateLive.close=(m_rates[size-1].open+m_rates[size-1].high+m_rates[size-1].low+m_rates[size-1].close)/4;
+      rateLive.high=MathMax(m_rates[size-1].high,MathMax(m_rates[size-1].open,m_rates[size-1].close));
+      rateLive.low=MathMin(m_rates[size-1].low,MathMin(m_rates[size-1].open,m_rates[size-1].close));
+      rateLive.tick_volume=m_rates[size-1].tick_volume;
+      rateLive.time=m_rates[size-1].time;
+
+      ArrayResize(rates,ArraySize(rates)+1);
+      rates[ArraySize(rates)-1]=rateLive;
+
+      m_rates[size-1].time=NormalizeBarStartTime(m_nextCandleTime);
+      m_nextCandleTime=m_rates[ArraySize(m_rates)-1].time+periodseconds;
+      m_rates[size-1].open = iOpen(m_symbol, m_basePeriod,0);
+      m_rates[size-1].low  = iLow(m_symbol, m_basePeriod,0);
+      m_rates[size-1].high = iHigh(m_symbol, m_basePeriod,0);
+      m_rates[size-1].close= iClose(m_symbol, m_basePeriod,0);
+      m_rates[size-1].tick_volume=(long)m_dataSource.Volume(0);
+      m_lastVolume=m_rates[size-1].tick_volume;
+
+      rateLive.open=(rateLive.open+rateLive.close)/2;
+      rateLive.close=(m_rates[size-1].open+m_rates[size-1].high+m_rates[size-1].low+m_rates[size-1].close)/4;
+      rateLive.high=MathMax(m_rates[size-1].high,MathMax(m_rates[size-1].open,m_rates[size-1].close));
+      rateLive.low=MathMin(m_rates[size-1].low,MathMin(m_rates[size-1].open,m_rates[size-1].close));
+      rateLive.tick_volume=m_rates[size-1].tick_volume;
+      rateLive.time=m_rates[size-1].time;
+
+      ArrayResize(rates,ArraySize(rates)+1);
+      rates[ArraySize(rates)-1]=rateLive;
+     }
+
+   return true;
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void HeikenAshiBuilder::UpdateAllRates()
+  {
+   ArrayResize(m_rates,1);
+   
+   int periodseconds=m_chartPeriod*60;
+   int days=1;
+   if(m_chartPeriod>=1440)
+     {
+      days=m_chartPeriod/1440;
+     }
+   int start_pos=CalculateStartPosition();
+   ResetLastError();
+   
+   int index=0;
+   m_rates[index].open=m_dataSource.Open(start_pos);
+   m_rates[index].low=m_dataSource.Low(start_pos);
+   m_rates[index].high=m_dataSource.High(start_pos);
+   m_rates[index].tick_volume=(long)m_dataSource.Volume(start_pos);
+   m_rates[index].spread=0;
+   m_rates[index].real_volume=0;
+   m_rates[index].time=NormalizeBarStartTime(iTime(m_symbol,m_basePeriod,start_pos));
+
+   m_nextCandleTime=m_rates[index].time+periodseconds;
+   int weekDay=TimeDayOfWeek(m_rates[index].time);
+
+   if(start_pos>=70000)
+     {
+      start_pos=69999;
+     }
+   for(int i=start_pos-1; i>=0; i--)
+     {
+     
+      if(IsStopped())
+         break;
+         
+      m_time0=iTime(m_symbol,m_basePeriod,i);
+      
+      //--- history may be updated
+      if(i==0)
+        {
+         //--- modify index if history was updated
+         if(RefreshRates())
+         {
+            i=m_dataSource.BarShift(m_time0);
+         }
+        }
+      //---
+      int time0Weekday=TimeDayOfWeek(m_time0);
+      int nextCandleTimeWeekDay=TimeDayOfWeek(m_nextCandleTime);
+
+      if(((nextCandleTimeWeekDay-time0Weekday)>days) && (days>0))
+        {
+         // new week started - recalculate nextcandletime
+         MqlDateTime nextBarTime;
+         TimeToStruct(m_nextCandleTime,nextBarTime);
+         // Replace nextcandletime date with date of current candle
+         nextBarTime.day = TimeDay(m_time0);
+         nextBarTime.mon = TimeMonth(m_time0);
+         nextBarTime.year= TimeYear(m_time0);
+         nextBarTime.min = 0;
+         if(nextBarTime.hour>m_brokerHourForFirstCandle)
+           {
+            nextBarTime.hour=m_brokerHourForFirstCandle;
+           }
+         m_nextCandleTime=StructToTime(nextBarTime);
+        }
+
+      if(m_time0>=m_nextCandleTime || i==0)
+        {
+         index=ArraySize(m_rates);
+         ArrayResize(m_rates,index+1);
+         if(i==0 && m_time0<m_nextCandleTime)
+           {
+
+            m_rates[index].tick_volume+=(long)m_dataSource.Volume(0);
+            if(m_rates[index].low>m_dataSource.Low(0))
+              {
+               m_rates[index].low=m_dataSource.Low(0);
+              }
+            if(m_rates[index].high<m_dataSource.High(0))
+              {
+               m_rates[index].high=m_dataSource.High(0);
+              }
+            m_rates[index].close=m_dataSource.Close(0);
+           }
+
+         m_lastVolume=(long)m_dataSource.Volume(0);
+
+         if(m_time0>=m_nextCandleTime)
+           {
+            m_rates[index].time=NormalizeBarStartTime(m_nextCandleTime);
+
+            m_nextCandleTime=m_rates[index].time+periodseconds;
+            m_rates[index].open=m_dataSource.Open(i);
+            m_rates[index].low=m_dataSource.Low(i);
+            m_rates[index].high=m_dataSource.High(i);
+            m_rates[index].close=m_dataSource.Close(i);
+            m_rates[index].tick_volume=m_lastVolume;
+           }
+        }
+      else
+        {
+         m_rates[index].tick_volume+=(long)m_dataSource.Volume(i);
+         if(m_rates[index].low>m_dataSource.Low(i))
+           {
+            m_rates[index].low=m_dataSource.Low(i);
+           }
+         if(m_rates[index].high<m_dataSource.High(i))
+           {
+            m_rates[index].high=m_dataSource.High(i);
+           }
+         m_rates[index].close=m_dataSource.Close(i);
+        }
+     }
+
+   if(m_dataSource.Open(0)<m_dataSource.Close(0))
+     {
+      m_rates[ArraySize(m_rates)-1].high=m_dataSource.Low(0);
+      m_rates[ArraySize(m_rates)-1].low=m_dataSource.High(0);
+     }
+   else
+     {
+      m_rates[ArraySize(m_rates)-1].high=m_dataSource.High(0);
+      m_rates[ArraySize(m_rates)-1].low=m_dataSource.Low(0);
+     }
+   m_rates[ArraySize(m_rates)-1].open=m_dataSource.Open(0);
+   m_rates[ArraySize(m_rates)-1].close=m_dataSource.Close(0);
+
+   for(int i=1; i<ArraySize(m_rates); i++)
+     {
+      m_rates[i].open=(m_rates[i-1].open+m_rates[i-1].close)/2;
+      m_rates[i].close=(m_rates[i].open+m_rates[i].high+m_rates[i].low+m_rates[i].close)/4;
+      m_rates[i].high=MathMax(m_rates[i].high,MathMax(m_rates[i].open,m_rates[i].close));
+      m_rates[i].low=MathMin(m_rates[i].low,MathMin(m_rates[i].open,m_rates[i].close));
+     }
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+int HeikenAshiBuilder::CalculateStartPosition()
+  {
+   if(m_GMTstart>=0 && m_GMTstart<=23)
+     {
+      // GMTStart is given - compute start bar index      
+      for(int i=m_dataSource.BarsCount()-1; i>=0; i--)
+        {
+         int barHour= TimeHour(iTime(m_symbol,m_basePeriod,i));
+         if(barHour == m_brokerHourForFirstCandle)
+            return(i);
+        }
+     }
+
+   return(m_dataSource.BarsCount()-1);
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+datetime HeikenAshiBuilder::NormalizeBarStartTime(datetime inTime)
+  {
+   MqlDateTime startTime;
+   TimeToStruct(inTime,startTime);
+   startTime.sec = 0;
+   startTime.min = 0;
+   return(StructToTime(startTime));
+  }
+//+------------------------------------------------------------------+
